@@ -1,86 +1,83 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score
+)
 
-st.set_page_config(layout="wide")
-st.title("📈 Crypto Price Spread Classifier (BTC vs ETH)")
+# App title and layout
+st.set_page_config(page_title="Crypto Spread Classifier", layout="wide")
+st.title("📊 Crypto Spread Classifier Dashboard")
+st.markdown("This app predicts BTC-ETH spread movement using a Random Forest model.")
 
-btc_file = st.file_uploader("Upload BTC CSV", type=["csv"])
-eth_file = st.file_uploader("Upload ETH CSV", type=["csv"])
+# File upload section
+st.sidebar.header("Upload Datasets")
+btc_file = st.sidebar.file_uploader("Upload BTC CSV", type=["csv"])
+eth_file = st.sidebar.file_uploader("Upload ETH CSV", type=["csv"])
 
 if btc_file and eth_file:
-    # 1) Load data
     btc = pd.read_csv(btc_file)
     eth = pd.read_csv(eth_file)
 
-    # 2) Preprocessing: lowercase columns and parse date
-    btc.columns = btc.columns.str.lower()
-    eth.columns = eth.columns.str.lower()
-    btc["date"] = pd.to_datetime(btc["date"])
-    eth["date"] = pd.to_datetime(eth["date"])
-    btc.set_index("date", inplace=True)
-    eth.set_index("date", inplace=True)
+    # Ensure consistent datetime format
+    btc["date"] = pd.to_datetime(btc["date"], format="%Y-%m-%d", errors="coerce")
+    eth["date"] = pd.to_datetime(eth["date"], format="%Y-%m-%d", errors="coerce")
+    btc.dropna(subset=["date"], inplace=True)
+    eth.dropna(subset=["date"], inplace=True)
 
-    # 3) Merge data
-    df = pd.DataFrame()
-    df["btc_close"] = btc["close"]
-    df["eth_close"] = eth["close"]
-    df.dropna(inplace=True)
+    # Merge datasets on date
+    df = pd.merge(btc, eth, on="date", suffixes=('_btc', '_eth'))
+    df["spread"] = df["close_btc"] - df["close_eth"]
+    df["spread_direction"] = (df["spread"].diff().shift(-1) > 0).astype(int)
 
-    # 4) Calculate spread and label
-    df["spread"] = df["btc_close"] - df["eth_close"]
-    threshold = df["spread"].median()
-    df["target"] = (df["spread"] > threshold).astype(int)
+    features = [
+        "close_btc", "volume_btc", "high_btc", "low_btc", "open_btc",
+        "close_eth", "volume_eth", "high_eth", "low_eth", "open_eth"
+    ]
+    df = df.dropna()
+    X = df[features]
+    y = df["spread_direction"]
 
-    # 5) Features
-    df["btc_pct"] = btc["close"].pct_change()
-    df["eth_pct"] = eth["close"].pct_change()
-    df.dropna(inplace=True)
-
-    X = df[["btc_pct", "eth_pct"]]
-    y = df["target"]
-
-    # 6) Train-test split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-    # 7) Scaling
-    scaler = StandardScaler()
-    X_train_p = scaler.fit_transform(X_train)
-    X_test_p = scaler.transform(X_test)
-
-    # 8) Train model
+    # Split and preprocess
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train_p, y_train)
-    y_pred = model.predict(X_test_p)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
 
-    # 9) Metrics
-    st.subheader("📊 Model Performance")
-    st.write(f"Accuracy: **{accuracy_score(y_test, y_pred):.4f}**")
-    st.write(f"Precision: **{precision_score(y_test, y_pred):.4f}**")
-    st.write(f"Recall: **{recall_score(y_test, y_pred):.4f}**")
-    st.write(f"F1 Score: **{f1_score(y_test, y_pred):.4f}**")
-    mse = -cross_val_score(model, X_train_p, y_train, cv=5, scoring='neg_mean_squared_error').mean()
-    st.write(f"MSE (CV): **{mse:.4f}**")
+    # Display metrics
+    st.subheader("📈 Model Performance")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.4f}")
+    col2.metric("Precision", f"{precision_score(y_test, y_pred):.4f}")
+    col3.metric("Recall", f"{recall_score(y_test, y_pred):.4f}")
+    col4.metric("F1 Score", f"{f1_score(y_test, y_pred):.4f}")
 
-    # 10) Training progress plot
-    st.subheader("📈 Training Progress")
-    train_acc, test_acc = [], []
-    for i in range(10, len(X_train_p), 10):
-        model.fit(X_train_p[:i], y_train[:i])
-        train_acc.append(accuracy_score(y_train[:i], model.predict(X_train_p[:i])))
-        test_acc.append(accuracy_score(y_test, model.predict(X_test_p)))
+    mse = -cross_val_score(model, X_train, y_train, cv=5, scoring="neg_mean_squared_error").mean()
+    st.metric("MSE (CV)", f"{mse:.4f}")
+
+    # Training progress plot
+    st.subheader("📊 Training Accuracy Over Time")
+    train_acc, test_acc, steps = [], [], []
+    for i in range(10, len(X_train), 10):
+        model.fit(X_train[:i], y_train[:i])
+        train_acc.append(accuracy_score(y_train[:i], model.predict(X_train[:i])))
+        test_acc.append(accuracy_score(y_test, model.predict(X_test)))
+        steps.append(i)
 
     fig, ax = plt.subplots()
-    ax.plot(range(10, len(X_train_p), 10), train_acc, label="Train")
-    ax.plot(range(10, len(X_train_p), 10), test_acc, label="Test")
+    ax.plot(steps, train_acc, label="Train Accuracy")
+    ax.plot(steps, test_acc, label="Test Accuracy")
     ax.set_xlabel("Training Samples")
     ax.set_ylabel("Accuracy")
     ax.legend()
+    ax.grid(True)
     st.pyplot(fig)
 
+    # Show raw data
+    with st.expander("📂 View Merged Data"):
+        st.dataframe(df.head(20))
+
 else:
-    st.warning("⚠️ Please upload both CSV files to proceed.")
+    st.warning("⚠️ Please upload both BTC and ETH CSV files to proceed.")
